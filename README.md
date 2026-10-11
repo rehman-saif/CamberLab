@@ -1,7 +1,7 @@
 <h1 align="center">CamberLab</h1>
 
 <p align="center">
-  <strong>Millisecond lift, drag and surface pressure / skin-friction predictions for NACA 4- and 5-digit aerofoils, trained on AirfRANS</strong>
+  <strong>Surrogate models for NACA aerofoil aerodynamics</strong>
 </p>
 
 <p align="center">
