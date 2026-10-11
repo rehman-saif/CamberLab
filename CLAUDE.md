@@ -133,8 +133,8 @@ conda activate ...       # no conda/micromamba in this project
 | Splits | `scripts/22_make_splits.py` | `splits/airfrans_{task}_{train,test}_idx.npy` |
 | Wall gate | `scripts/23_surface_gate.py` | `results/airfrans_surface_gate.{md,json}` |
 | Train (Gate 6) | `scripts/09_train_surrogates.py --task all [--outputs coeffs\|curves\|all]` | `models/{task}/`, `models/{task}/curves/` |
-| Evaluate | `scripts/10_global_validation.py` | `results/airfrans_metrics.csv`, `results/airfrans_curve_metrics.csv`, `results/airfrans_benchmark.md` |
-| Query | `scripts/predict.py`, `scripts/11_sweep_curves.py`, `app.py` | — |
+| Evaluate | `scripts/10_global_validation.py` | `results/airfrans_metrics.csv`, `results/airfrans_curve_metrics.csv`, `results/airfrans_test_predictions.csv`, `results/airfrans_benchmark.md` |
+| Query | `scripts/predict.py`, `scripts/11_sweep_curves.py`, `app.py` (pages in `app_pages/`: CamberLab, Model accuracy) | — |
 
 Model inputs (`scripts/surrogate/data.py::FEATURES`), standardised with a
 `StandardScaler` saved as `models/{task}/preprocessor.joblib`:
@@ -173,7 +173,9 @@ X = [alpha_deg, log10_Re, t_max, x_tmax, m_max, x_m]      # shape (N, 6)
 - Test indices are sacred: never used for fitting, model selection or
   tuning. Hyperparameters (RF `min_samples_leaf`, MLP patience/L2) are
   chosen by 5-fold CV on the training rows only. `10_global_validation.py`
-  is the only script that reads test indices.
+  is the only script that reads test indices. It writes per-case test
+  predictions to `results/airfrans_test_predictions.csv`, which the app's
+  Model accuracy section displays; the app itself never loads test indices.
 
 ---
 
