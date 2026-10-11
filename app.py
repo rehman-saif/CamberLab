@@ -19,6 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.airfrans.geometry import naca_coordinates, parse_naca  # noqa: E402
+from scripts.surrogate.data import SPLITS_DIR, load_dataset  # noqa: E402
 from scripts.surrogate.inference import (  # noqa: E402
     curve_quantities,
     has_curve_models,
@@ -32,15 +33,29 @@ from scripts.surrogate.models import FAMILIES, FAMILY_LABELS  # noqa: E402
 RESULTS_DIR = PROJECT_ROOT / "results"
 METRICS_PATH = RESULTS_DIR / "airfrans_metrics.csv"
 TASK = "full"
+Z95 = 1.96                     # two-sided 95% normal quantile; the inference API returns ±2σ
 
-SERIES = "#2a78d6"
-SERIES_BAND = "rgba(42, 120, 214, 0.16)"
-TRAINING = "#eb6834"
-INK = "#0b0b0b"
-INK_SECONDARY = "#52514e"
-GRID = "#e4e3df"
+# "Nearby CFD rows": training cases within these bands of the query (as in the
+# original regime app, which used ±8% Re and ±0.01 t/c; camber is added because
+# AirfRANS sections are cambered).
+NEAR_RE_FRAC = 0.08
+NEAR_DT = 0.01
+NEAR_DM = 0.01
+
+SERIES = "#1f77b4"
+SERIES_BAND = "rgba(31, 119, 180, 0.20)"
+POLAR = "#7c3aed"
+TRAINING = "#f59e0b"
+LOWER = "#eb6834"
 
 st.set_page_config(page_title="CamberLab", layout="wide")
+
+
+@st.cache_data(show_spinner=False)
+def load_training() -> pd.DataFrame:
+    """Training rows of the task only — the test split is never read here."""
+    idx = np.load(SPLITS_DIR / f"airfrans_{TASK}_train_idx.npy")
+    return load_dataset().iloc[idx].reset_index(drop=True)
 
 
 @st.cache_data(show_spinner=False)
@@ -55,69 +70,106 @@ def airfoil_figure(naca: str) -> go.Figure:
                                line=dict(color=SERIES, width=2), fillcolor=SERIES_BAND,
                                hoverinfo="skip", showlegend=False))
     fig.add_hline(y=0, line_dash="dot", line_color="#8a8985", line_width=1)
-    fig.update_layout(height=170, margin=dict(l=8, r=8, t=8, b=8),
+    fig.update_layout(height=180, margin=dict(l=8, r=8, t=8, b=8),
                       xaxis=dict(visible=False, range=[-0.03, 1.03], scaleanchor="y", scaleratio=1),
-                      yaxis=dict(visible=False), paper_bgcolor="rgba(0,0,0,0)",
+                      yaxis=dict(visible=False, range=[-0.18, 0.18]), paper_bgcolor="rgba(0,0,0,0)",
                       plot_bgcolor="rgba(0,0,0,0)")
     return fig
 
 
-def style_plot(fig: go.Figure, x_title: str, y_title: str, title: str, height: int = 400) -> go.Figure:
+def style_plot(fig: go.Figure, x_title: str, y_title: str, title: str, height: int = 430) -> go.Figure:
+    """Same figure size, margins and legend placement as the original regime app."""
     fig.update_layout(
-        title=dict(text=title, font=dict(size=16, color=INK), x=0.02, xanchor="left"),
-        height=height, margin=dict(l=60, r=24, t=50, b=90),
-        paper_bgcolor="#ffffff", plot_bgcolor="#ffffff", hovermode="x unified",
-        legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5,
-                    font=dict(size=12, color=INK_SECONDARY)),
-        font=dict(size=13, color=INK),
+        title=dict(text=title, font=dict(size=17, color="#0f172a"), x=0.02, xanchor="left"),
+        height=height, margin=dict(l=64, r=28, t=54, b=104),
+        paper_bgcolor="#ffffff", plot_bgcolor="#ffffff", showlegend=True,
+        legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5,
+                    bgcolor="#ffffff", bordercolor="#cbd5e1", borderwidth=1,
+                    font=dict(size=12, color="#1e293b"), itemwidth=30),
+        font=dict(family="Arial", size=13, color="#0f172a"),
     )
-    for upd in (fig.update_xaxes, fig.update_yaxes):
-        upd(showgrid=True, gridcolor=GRID, linecolor=GRID, zerolinecolor="#c9c8c3",
-            tickfont=dict(size=12, color=INK_SECONDARY))
-    fig.update_xaxes(title=dict(text=x_title, font=dict(size=13, color=INK_SECONDARY)))
-    fig.update_yaxes(title=dict(text=y_title, font=dict(size=13, color=INK_SECONDARY)))
+    for upd, text in ((fig.update_xaxes, x_title), (fig.update_yaxes, y_title)):
+        upd(title=dict(text=text, font=dict(size=13, color="#1e293b")),
+            tickfont=dict(size=12, color="#334155"), showgrid=True, gridcolor="#dbe3ef",
+            linecolor="#94a3b8", zerolinecolor="#94a3b8")
     return fig
 
 
-def curve_figure(df: pd.DataFrame, y: str, title: str, y_title: str, family: str) -> go.Figure:
+def add_95_band(df: pd.DataFrame) -> pd.DataFrame:
+    """Add {Cl,Cd,L_over_D}_{lo95,hi95} where a posterior σ exists.
+
+    Cd is modelled as log Cd, so its band is exp(log Cd ± 1.96σ) with
+    σ = Cd_std / Cd (inverting the delta method). L/D uses first-order error
+    propagation from Cl and Cd, as the original app did.
+    """
+    df = df.copy()
+    if df.Cl_std.isna().all():
+        return df
+    df["Cl_lo95"], df["Cl_hi95"] = df.Cl - Z95 * df.Cl_std, df.Cl + Z95 * df.Cl_std
+    s_log = df.Cd_std / df.Cd
+    df["Cd_lo95"], df["Cd_hi95"] = df.Cd * np.exp(-Z95 * s_log), df.Cd * np.exp(Z95 * s_log)
+    rel = np.sqrt((df.Cl_std / df.Cl.where(df.Cl != 0)) ** 2 + s_log ** 2)
+    df["L_over_D_std"] = (df.L_over_D.abs() * rel).fillna(0.0)
+    df["L_over_D_lo95"] = df.L_over_D - Z95 * df.L_over_D_std
+    df["L_over_D_hi95"] = df.L_over_D + Z95 * df.L_over_D_std
+    return df
+
+
+def nearby_cfd(train: pd.DataFrame, re: float, geo: dict) -> pd.DataFrame:
+    """Training cases at a similar Re and section (any α)."""
+    return train[(train.Re.sub(re).abs() <= max(NEAR_RE_FRAC * re, 75_000.0))
+                 & (train.t_max.sub(geo["t_max"]).abs() <= NEAR_DT)
+                 & (train.m_max.sub(geo["m_max"]).abs() <= NEAR_DM)]
+
+
+def curve_figure(df: pd.DataFrame, y: str, title: str, y_title: str, family: str,
+                 near: pd.DataFrame | None = None) -> go.Figure:
     fig = go.Figure()
-    lo, hi = f"{y}_lo", f"{y}_hi"
+    fig.add_trace(go.Scatter(x=df.alpha_deg, y=df[y], mode="lines+markers",
+                             line=dict(color=SERIES, width=3), marker=dict(size=6),
+                             name=f"{FAMILY_LABELS[family]} surrogate",
+                             hovertemplate=f"α %{{x:.2f}}°<br>{y_title} %{{y:.5g}}<extra></extra>"))
+    lo, hi = f"{y}_lo95", f"{y}_hi95"
     if lo in df:
         fig.add_trace(go.Scatter(x=pd.concat([df.alpha_deg, df.alpha_deg[::-1]]),
                                  y=pd.concat([df[hi], df[lo][::-1]]), fill="toself",
-                                 fillcolor=SERIES_BAND, line=dict(width=0), hoverinfo="skip",
-                                 name="±2σ band"))
-    fig.add_trace(go.Scatter(x=df.alpha_deg, y=df[y], mode="lines", line=dict(color=SERIES, width=2.5),
-                             name=f"{FAMILY_LABELS[family]} surrogate",
-                             hovertemplate=f"α %{{x:.2f}}°<br>{y_title} %{{y:.5g}}<extra></extra>"))
+                                 fillcolor=SERIES_BAND, line=dict(color="rgba(255,255,255,0)"),
+                                 hoverinfo="skip", name="95% uncertainty band"))
+    if near is not None and len(near):
+        fig.add_trace(go.Scatter(
+            x=near.alpha_deg, y=near[y], mode="markers",
+            marker=dict(size=7, color=TRAINING, symbol="circle-open", line=dict(width=2)),
+            name="nearby CFD rows",
+            customdata=np.column_stack([near.sample_id, near.Re / 1e6, near.t_max, near.m_max]),
+            hovertemplate=("sample %{customdata[0]:.0f}<br>α %{x:.2f}°, Re %{customdata[1]:.2f}e6<br>"
+                           "t/c %{customdata[2]:.3f}, m %{customdata[3]:.4f}<br>" + y_title +
+                           " %{y:.5g}<extra></extra>")))
     return style_plot(fig, "Angle of attack (deg)", y_title, title)
 
 
-def polar_figure(df: pd.DataFrame) -> go.Figure:
-    fig = go.Figure(go.Scatter(x=df.Cd, y=df.Cl, mode="lines", line=dict(color=SERIES, width=2.5),
-                               name="drag polar", customdata=df.alpha_deg,
-                               hovertemplate="α %{customdata:.2f}°<br>Cd %{x:.5f}<br>Cl %{y:.4f}<extra></extra>"))
-    i = int(np.argmax(df.L_over_D))
-    fig.add_trace(go.Scatter(x=[df.Cd.iloc[i]], y=[df.Cl.iloc[i]], mode="markers",
-                             marker=dict(size=11, color=TRAINING), name=f"max L/D ({df.L_over_D.iloc[i]:.0f})",
-                             hoverinfo="skip"))
-    fig.update_layout(hovermode="closest")
+def polar_figure(df: pd.DataFrame, family: str) -> go.Figure:
+    fig = go.Figure(go.Scatter(x=df.Cd, y=df.Cl, mode="lines+markers", line=dict(color=POLAR, width=3),
+                               marker=dict(size=6), name=f"{FAMILY_LABELS[family]} surrogate",
+                               customdata=df.alpha_deg,
+                               hovertemplate="α %{customdata:.2f}°<br>Cd %{x:.5f}<br>Cl %{y:.5f}<extra></extra>"))
     return style_plot(fig, "Cd", "Cl", "Drag polar")
 
 
 def surface_figure(surf: pd.DataFrame, q: str, alpha: float) -> go.Figure:
-    """Cp or Cf against x/c, upper solid and lower dashed, with ±2σ bands where available."""
+    """Cp or Cf against x/c, upper solid and lower dashed, with 95% bands where available."""
     scale = 1e3 if q == "Cf" else 1.0
     fig = go.Figure()
     for side, dash in (("upper", "solid"), ("lower", "dash")):
         s = surf[surf.surface == side]
         if f"{q}_lo" in s:
+            half = Z95 * (s[f"{q}_hi"] - s[f"{q}_lo"]) / 4    # API band is ±2σ
             fig.add_trace(go.Scatter(x=pd.concat([s.x_c, s.x_c[::-1]]),
-                                     y=pd.concat([s[f"{q}_hi"], s[f"{q}_lo"][::-1]]) * scale,
+                                     y=pd.concat([s[q] + half, (s[q] - half)[::-1]]) * scale,
                                      fill="toself", fillcolor=SERIES_BAND, line=dict(width=0),
-                                     hoverinfo="skip", name="±2σ band", showlegend=side == "upper"))
+                                     hoverinfo="skip", name="95% uncertainty band",
+                                     showlegend=side == "upper"))
         fig.add_trace(go.Scatter(x=s.x_c, y=s[q] * scale, mode="lines", name=f"{side} surface",
-                                 line=dict(color=SERIES if side == "upper" else TRAINING, width=2.5, dash=dash),
+                                 line=dict(color=SERIES if side == "upper" else LOWER, width=3, dash=dash),
                                  hovertemplate=f"x/c %{{x:.3f}}<br>{q} %{{y:.4g}}<extra>{side}</extra>"))
     if q == "Cp":
         fig.update_yaxes(autorange="reversed")
@@ -147,6 +199,7 @@ def model_error_note(metrics: pd.DataFrame, family: str) -> list[str]:
 
 envelope = load_envelope(TASK)["envelope"]
 metrics = load_metrics()
+train = load_training()
 
 st.title("CamberLab")
 st.caption("Lift, drag and surface pressure / skin friction of NACA 4- and 5-digit aerofoils, "
@@ -155,10 +208,10 @@ st.caption("Lift, drag and surface pressure / skin friction of NACA 4- and 5-dig
 
 with st.sidebar:
     st.header("Inputs")
-    naca = st.text_input("NACA code (4 or 5 digits)", value="2412", max_chars=9).strip()
-    re = st.slider("Reynolds number", min_value=2.0e6, max_value=6.0e6, value=3.0e6, step=1.0e5, format="%.1e")
-    alpha_min, alpha_max = st.slider("AoA sweep (deg)", -5.0, 15.0, (-5.0, 15.0), step=0.5)
-    n_points = st.slider("Sweep points", 21, 161, 81, step=10)
+    naca = st.text_input("NACA code (4 or 5 digits)", value="0012", max_chars=9).strip()
+    re = st.slider("Reynolds number", min_value=2.0e6, max_value=6.0e6, value=2.0e6, step=1.0e5, format="%.1e")
+    alpha_min, alpha_max = st.slider("AoA sweep (deg)", -5.0, 15.0, (0.0, 8.0), step=0.5)
+    n_points = st.slider("Sweep points", 21, 161, 61, step=10)
     surface_alpha = st.slider("AoA for surface curves (deg)", -5.0, 15.0, 4.0, step=0.5)
     family = st.selectbox("Model family", FAMILIES, index=FAMILIES.index("gp"),
                           format_func=lambda f: {"gp": "GP — Gaussian process", "rf": "RF — random forest",
@@ -185,7 +238,7 @@ if not valid:
     st.stop()
 
 alphas = np.linspace(alpha_min, alpha_max, n_points)
-df = predict_curve(alphas, re, code, family, TASK)
+df = add_95_band(predict_curve(alphas, re, code, family, TASK))
 warnings = df.attrs["warnings"]
 outside = [w for w in warnings if "outside" in w]
 if outside:
@@ -204,12 +257,16 @@ kpi[3].metric("Min Cd in sweep", f"{df.Cd.min():.5f}")
 zero = np.interp(0.0, df.Cl, df.alpha_deg) if df.Cl.min() < 0 < df.Cl.max() else np.nan
 kpi[4].metric("Zero-lift α", "—" if np.isnan(zero) else f"{zero:.2f}°")
 
+near = nearby_cfd(train, re, geo)
 c1, c2 = st.columns(2)
-c1.plotly_chart(curve_figure(df, "Cl", "Lift curve", "Cl", family), width="stretch")
-c2.plotly_chart(curve_figure(df, "Cd", "Drag curve", "Cd", family), width="stretch")
+c1.plotly_chart(curve_figure(df, "Cl", "Lift curve", "Cl", family, near), width="stretch")
+c2.plotly_chart(curve_figure(df, "Cd", "Drag curve", "Cd", family, near), width="stretch")
 c3, c4 = st.columns(2)
-c3.plotly_chart(polar_figure(df), width="stretch")
-c4.plotly_chart(curve_figure(df, "L_over_D", "Efficiency", "L/D", family), width="stretch")
+c3.plotly_chart(curve_figure(df, "L_over_D", "Efficiency curve", "L/D", family), width="stretch")
+c4.plotly_chart(polar_figure(df, family), width="stretch")
+st.caption(f"Nearby CFD rows: {len(near)} AirfRANS training cases within ±{100 * NEAR_RE_FRAC:.0f}% Re, "
+           f"±{NEAR_DT:g} t/c and ±{NEAR_DM:g} camber of the query, at any α. They are similar, "
+           "not identical, sections — context, not ground truth for this query.")
 quantities = curve_quantities(TASK)
 if quantities and not has_curve_models(family, TASK):
     st.caption(f"Surface Cp / Cf curves are not bundled for {FAMILY_LABELS[family]} (only GP and MLP "
@@ -224,7 +281,7 @@ elif quantities:
         st.caption("Skin friction is not shown: the computed wall shear stress did not reproduce "
                    "AirfRANS' drag closely enough (results/airfrans_surface_gate.md).")
 if family not in ("gp", "krg"):
-    st.caption("Uncertainty bands are shown for the GP and KRG families only.")
+    st.caption("95% uncertainty bands are shown for the GP and KRG families only.")
 
 st.subheader("Model error context")
 for line in model_error_note(metrics, family):
@@ -236,7 +293,7 @@ st.caption(f"Training envelope: α {envelope['alpha_deg'][0]:.1f}° to {envelope
            "transition; steady RANS is least reliable near stall.")
 
 st.subheader("Prediction table")
-cols = [c for c in ["alpha_deg", "Cl", "Cl_std", "Cd", "Cd_std", "L_over_D"] if c in df]
+cols = [c for c in ["alpha_deg", "Cl", "Cl_std", "Cd", "Cd_std", "L_over_D", "L_over_D_std"] if c in df]
 table = df[cols].astype(float).round(6)
 st.dataframe(table, width="stretch", hide_index=True)
 st.download_button("Download predictions CSV", data=table.to_csv(index=False).encode("utf-8"),
