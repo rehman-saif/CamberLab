@@ -25,34 +25,45 @@ Live demo: <https://camberlab.streamlit.app/>
 
 The surrogates are trained on **AirfRANS** (Bonnet et al., NeurIPS 2022):
 1,000 steady 2D incompressible RANS simulations (OpenFOAM, k-ω SST) of NACA 4-
-and 5-digit aerofoils at Re 2–6×10⁶ and α −5° to 15°. Unlike the AirfRANS
-paper's baselines, which predict the whole flow field and integrate forces
-from it, CamberLab regresses the force coefficients directly. That makes drag
-prediction far more accurate: on the paper's own test sets, CamberLab ranks
-drag with Spearman ρ_D ≈ 0.98, where the paper's best field model reaches 0.25.
-It also predicts the wall pressure and skin-friction distributions, with an
-error on the paper's own surface metrics about 4× (pressure) to two orders
-of magnitude (wall shear) lower than the field models'.
+and 5-digit aerofoils at Re 2–6×10⁶ and α −5° to 15°. CamberLab regresses the
+force coefficients and wall distributions directly from section geometry and
+flow conditions, rather than predicting the flow field and integrating it. On
+the 200 held-out AirfRANS test cases the Gaussian-process surrogate reaches
+R² = 0.9993 on Cl and 0.981 on Cd (median drag error 0.6%), and on NACA 0012
+at Re 6×10⁶ it reproduces the NASA TMR k-ω SST solution to within 1.7% in Cd.
 
 ## Features
 
 - **Any NACA 4- or 5-digit section** (standard and reflex 5-digit mean lines).
   Geometry features are computed by the same code from the CFD mesh wall at
   training time and from the analytic section at query time.
-- **Four surrogate families**: Gaussian process, random forest, MLP and
-  Kriging (SMT), each fitted for Cl and log Cd.
-- **Surface distributions.** Cp(x/c) and signed Cf(x/c) on both surfaces
-  (Cf < 0 marks separation), predicted as PCA mode weights by the same
+- **Four surrogate families**: Gaussian process (GP), random forest (RF),
+  multilayer perceptron (MLP) and Kriging (KRG, SMT), each fitted for Cl and
+  log Cd.
+- **Wall distributions.** Cp(x/c) and signed Cf(x/c) on both surfaces
+  (Cf < 0 marks reversed flow), predicted as PCA mode weights by the same
   families. The CFD wall data behind them reproduces AirfRANS' C_L and C_D
   to within 2.7% on every sample.
-- **Uncertainty where it is real.** GP and Kriging give posterior ±2σ bands;
-  GP bands cover 95–97% of held-out test points on the `full` task.
-- **Honest envelope handling.** Queries outside the training range still get a
-  prediction, always with a warning; they are never answered silently.
-- **Benchmarked like-for-like** on the four official AirfRANS tasks (`full`,
-  `scarce`, `reynolds`, `aoa`) with the paper's metrics.
-- **Interactive app**: Cl–α, Cd–α, drag polar and L/D sweeps, Cp and Cf
-  distributions, section preview and GP ±2σ uncertainty bands.
+- **Calibrated uncertainty.** GP and KRG report a 95% prediction interval;
+  the GP interval contains 95% of the held-out test values.
+- **Explicit applicability domain.** Queries outside the training range are
+  answered with a warning, never silently.
+- **Two-page interactive app** (below).
+
+## Application
+
+The Streamlit app has two pages that share one input panel (NACA code, Re,
+α sweep, model family).
+
+| Page | Content |
+|---|---|
+| **CamberLab** | Lift, drag, efficiency (L/D) and drag-polar curves over the α sweep with 95% prediction intervals; nearby training solutions (±8% Re, ±0.01 t/c, ±0.01 camber) for context; Cp and Cf distributions at a chosen α; tabulated predictions as CSV. |
+| **Model accuracy** | *External validation:* NACA 0012 at Re 6×10⁶ against Ladson's and Gregory & O'Reilly's experiments and the NASA TMR CFL3D k-ω SST solution (Cl, Cd, Cp, Cf). *Hold-out evaluation:* parity and residual-vs-α plots on the 200 AirfRANS test cases, and all four families compared on the same cases. Only the model family is editable on this page; the section is fixed to NACA 0012. |
+
+<p align="center">
+  <img src="docs/images/app-camberlab.png" alt="CamberLab prediction page" width="49%">
+  <img src="docs/images/app-model-accuracy.png" alt="Model accuracy page" width="49%">
+</p>
 
 ## Quickstart
 
@@ -66,8 +77,8 @@ uv venv && uv pip install -r requirements.txt
 uv run streamlit run app.py
 ```
 
-The app and CLI only need the committed `models/full/` artifacts (~150 MB),
-not the dataset. Surface curves ship for the GP and MLP families; KRG and RF
+The app and CLI only need the committed `models/full/` artifacts (~150 MB)
+and the evaluation outputs in `results/`, not the dataset. Surface curves ship for the GP and MLP families; KRG and RF
 curve models are too large to commit and must be trained locally.
 
 ### Predict from the command line
@@ -98,7 +109,7 @@ uv run python scripts/21_qa_airfrans.py              # → results/airfrans_qa.m
 uv run python scripts/22_make_splits.py              # official AirfRANS splits
 uv run python scripts/23_surface_gate.py             # wall data reproduces C_L/C_D?
 uv run python scripts/09_train_surrogates.py --task all                    # Cl/Cd + curves
-uv run python scripts/10_global_validation.py        # → results/airfrans_benchmark.md
+uv run python scripts/10_global_validation.py        # → test metrics and per-case predictions
 uv run pytest
 ```
 
@@ -107,56 +118,66 @@ uv run pytest
 
 Use `--data-dir` or `AIRFRANS_DIR` if the data lives elsewhere.
 
-## Project status
+## Results
 
-Held-out test results on the official AirfRANS `full` split (800 train / 200
-test). Relative error is the paper's `|(true − pred)/true|`; the median is
-shown because the mean blows up for Cl near zero.
+All numbers are on data excluded from training and hyper-parameter
+selection. The full write-up is [`results/airfrans_report.md`](results/airfrans_report.md).
 
-| Model | Cl R² | Cd R² | Spearman ρ_L | Spearman ρ_D | median rel. err. Cl | median rel. err. Cd |
+### Hold-out evaluation (AirfRANS 800/200 split)
+
+The official `full` split: 800 training and 200 test simulations. Errors are
+relative to the AirfRANS k-ω SST solutions; the median relative error is
+reported because the mean diverges for Cl near zero.
+
+| Model | R² Cl | R² Cd | Median rel. err. Cl | Median rel. err. Cd | P90 rel. err. Cd | 95% PI coverage |
 |---|---|---|---|---|---|---|
-| **GP** | 0.9993 | 0.9806 | 0.9995 | 0.980 | 1.07% | 0.59% |
-| **KRG** | 0.9993 | 0.9872 | 0.9995 | 0.985 | 0.90% | 0.71% |
-| **MLP** | 0.9984 | 0.9785 | 0.9989 | 0.993 | 1.86% | 1.83% |
-| **RF** | 0.9921 | 0.9492 | 0.9961 | 0.980 | 4.59% | 3.04% |
+| **GP** | 0.9993 | 0.9806 | 1.07% | 0.59% | 2.5% | 95% |
+| **KRG** | 0.9993 | 0.9872 | 0.90% | 0.71% | 3.2% | 82% |
+| **MLP** | 0.9984 | 0.9785 | 1.86% | 1.83% | 6.5% | — |
+| **RF** | 0.9921 | 0.9492 | 4.59% | 3.04% | 11.8% | — |
 
-Against the paper's field models, using their corrected results (arXiv
-2212.07564 v3, Appendix N), with mean relative error expressed as a percentage:
+GP is the default: its accuracy matches KRG and its 95% interval is
+calibrated, whereas the KRG interval is too narrow. Wall distributions (GP):
 
-| Task | Our best ρ_D | Paper's best ρ_D | Our best mean rel. err. Cd | Paper's best mean rel. err. Cd |
+| Quantity | R² (station mean) | RMSE | ±2σ coverage | Separation |
 |---|---|---|---|---|
-| `full` | 0.993 (MLP) | 0.250 (MLP) | 1.6% (GP) | 618% (MLP) |
-| `scarce` | 0.989 (MLP) | 0.254 (GraphSAGE) | 3.4% (MLP) | 454% (MLP) |
-| `reynolds` | 0.965 (MLP) | 0.192 (Graph U-Net) | 2.8% (GP) | 829% (MLP) |
-| `aoa` | 0.963 (KRG) | 0.552 (Graph U-Net) | 2.0% (KRG) | 435% (MLP) |
+| Cp(x/c) | 0.989 | 0.062 | 96% | — |
+| Cf(x/c) | 0.966 | 8.5×10⁻⁴ | 96% | detected in 97% of cases, x/c error 0.015 |
 
-On lift, the paper's field models are competitive in ranking (ρ_L ≈ 0.99) but
-not in magnitude: their best mean relative Cl error is 15–38%, against 4–7%
-here.
+The separation-point error is set by the 20-mode PCA truncation (~0.015 c);
+for Cp and overall Cf the regressors, not the modes, set the error.
 
-Surface curves on the `full` test set (GP, the app's default):
+<p align="center">
+  <img src="results/figures/eval/parity_full_Cd.png" alt="Cd parity on the 200 test cases, all four families" width="100%">
+</p>
 
-| Quantity | R² (station mean) | RMSE | ±2σ coverage | Paper metric: ours | Paper metric: their best |
-|---|---|---|---|---|---|
-| Cp(x/c) | 0.989 | 0.062 | 96% | `mean_rel_p` 2.02 | 8.19 (Graph U-Net) |
-| Cf(x/c) | 0.966 | 8.5×10⁻⁴ | 96% | `mean_rel_wss` 0.46 / 0.43 | 105 / 135 (GraphSAGE) |
+### External validation (NACA 0012, Re 6×10⁶)
 
-GP identifies upper-surface separation correctly in 97% of test cases, to
-within 0.015 c. That separation accuracy is limited by the 20 PCA modes
-itself (their truncation alone costs ~0.015 c); for Cp and overall Cf the
-regressors, not the modes, set the error. For NACA 0012 at Re 6×10⁶ its Cp and Cf lie on NASA TMR's
-CFL3D SST solution. Full tables, including the paper's original numbers:
-[`results/airfrans_benchmark.md`](results/airfrans_benchmark.md). Full write-up:
-[`results/airfrans_report.md`](results/airfrans_report.md).
+GP predictions against data from outside AirfRANS:
 
-Known weak spot: **Cd extrapolation to lower Re.** On the `reynolds` task
-(train Re 3–5×10⁶), GP and Kriging over-predict Cd by up to 2.6× (GP) and
-4.6× (KRG) for a handful of thin, cambered sections at negative α below
-Re 3×10⁶. RF and MLP extrapolate drag more gracefully there (≤ 1.27×). GP's
-good mean error on this task (2.8%, down from 15.8% on the remeshed data) is
-real but fragile: its optimiser has a second, worse optimum with the Re trend
-reversed, and small data changes decide which one it finds (see the report,
-failure mode 1).
+| Reference | ΔCl | ΔCd/Cd |
+|---|---|---|
+| NASA TMR CFL3D, k-ω SST (α = 0°, 10°, 15°) | 0.006 (mean abs.) | 1.7% (mean abs.) |
+| Ladson, NASA TM 4074 (tripped, −4° to 15°) | 0.008 (median abs.) | +5.4% (median) |
+
+Agreement with the SST solution measures surrogate error; the drag excess
+over experiment is that of fully turbulent SST and is inherited from the
+training data. Predicted Cp and Cf follow the TMR solution, including the
+suction peak:
+
+<p align="center">
+  <img src="results/figures/curves/naca0012_reference.png" alt="NACA 0012 Cp and Cf: GP vs NASA TMR SST and experiment" width="100%">
+</p>
+
+### Extrapolation in Reynolds number
+
+On the AirfRANS `reynolds` task (training Re 3–5×10⁶), GP and KRG over-predict
+Cd by up to 2.6× and 4.6× for a few thin, cambered sections at negative α
+below Re 3×10⁶; RF and MLP stay within 1.27×. The GP marginal likelihood has
+a second optimum with the Re trend reversed, so this task is sensitive to the
+fit (report, failure mode 1). The four official AirfRANS tasks (`full`,
+`scarce`, `reynolds`, `aoa`), evaluated with the AirfRANS paper's metrics,
+are tabulated in [`results/airfrans_benchmark.md`](results/airfrans_benchmark.md).
 
 ## How it works
 
@@ -202,15 +223,14 @@ failure mode 1).
   use the direct Cd model. The computed wall shear stress runs ~2.5% high
   against AirfRANS' own drag. Near stall, PCA slightly smooths
   plateau-shaped features.
-- `m_max` is measured from the geometric chord, so it reads slightly below the
-  nominal NACA camber for cambered sections. Training and queries are
-  consistent, but don't compare it one-to-one with NACA digits.
+  
 
 ## Repository layout
 
 ```text
 CamberLab/
-├── app.py                        # Streamlit app (reads models/full/)
+├── app.py                        # Streamlit entrypoint: navigation and shared inputs
+├── app_pages/                    # CamberLab (prediction) and Model accuracy pages
 ├── scripts/
 │   ├── airfrans/                 # dataset I/O, geometry, wall Cp/Cf, inspection, plot style
 │   ├── 20_ingest_airfrans.py     # samples → results/airfrans_dataset.csv
@@ -218,7 +238,7 @@ CamberLab/
 │   ├── 22_make_splits.py         # frozen official splits → splits/
 │   ├── 23_surface_gate.py        # wall Cp/Cf vs stored C_L/C_D
 │   ├── 09_train_surrogates.py    # GP / RF / MLP / KRG per task (Cl/Cd + curves)
-│   ├── 10_global_validation.py   # test metrics, plots, paper benchmark
+│   ├── 10_global_validation.py   # test metrics, per-case predictions, plots
 │   ├── 11_sweep_curves.py        # α sweep for one section
 │   ├── predict.py                # single-point CLI
 │   └── surrogate/                # data schema, model families, curves, inference API
