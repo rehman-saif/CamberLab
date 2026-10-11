@@ -12,9 +12,7 @@ import streamlit as st
 
 from app_pages.common import (
     RESULTS_DIR,
-    SERIES,
     TASK,
-    TRAINING,
     Z95,
     add_95_band,
     curve_figure,
@@ -101,8 +99,7 @@ def reference_coeff_figure(pred: pd.DataFrame, refs: dict, y: str, family: str) 
                              name="NASA TMR CFL3D SST (Re 6×10⁶)",
                              marker=dict(size=12, color=REF_TMR, symbol="diamond", line=dict(width=1, color="#fff")),
                              hovertemplate=f"TMR SST<br>α %{{x:.0f}}°<br>{y} %{{y:.5g}}<extra></extra>"))
-    title = "Lift curve" if y == "Cl" else "Drag curve"
-    return style_plot(fig, "Angle of attack (deg)", y, f"NACA 0012 {title.lower()}, Re = 6×10⁶")
+    return style_plot(fig, "Angle of attack (deg)", y, "Lift curve" if y == "Cl" else "Drag curve")
 
 
 def reference_surface_figure(surf: pd.DataFrame, refs: dict, q: str, alpha: int) -> go.Figure:
@@ -122,13 +119,13 @@ def reference_surface_figure(surf: pd.DataFrame, refs: dict, q: str, alpha: int)
                                      marker=dict(size=8, color=REF_GREGORY, symbol="triangle-up-open",
                                                  line=dict(width=1.5)),
                                      hovertemplate="Gregory<br>x/c %{x:.3f}<br>Cp %{y:.3f}<extra></extra>"))
-        title = f"NACA 0012 Cp, α = {alpha}°, Re = 6×10⁶"
+        title = f"Pressure distribution, α = {alpha}°"
     else:
         tmr = refs["tmr_cf"][f"alpha={alpha}, upper surface"]
         fig.add_trace(go.Scatter(x=tmr[:, 0], y=1e3 * tmr[:, 1], mode="lines", name="NASA TMR CFL3D SST (upper)",
                                  line=dict(color=REF_TMR, width=1.5), hoverinfo="skip"))
         fig.update_yaxes(range=[-2, 12])
-        title = f"NACA 0012 Cf (upper), α = {alpha}°, Re = 6×10⁶"
+        title = f"Skin friction, upper surface, α = {alpha}°"
     fig.update_layout(title_text=title)
     return fig
 
@@ -181,32 +178,13 @@ def parity_figure(test: pd.DataFrame, y: str, family: str) -> go.Figure:
     if y == "Cd":
         fig.update_xaxes(type="log")
         fig.update_yaxes(type="log")
-    return style_plot(fig, f"CFD {y}", f"{FAMILY_LABELS[family]} prediction", f"Parity — {y}")
+    return style_plot(fig, f"{y}, CFD (AirfRANS)", f"{y}, predicted ({FAMILY_LABELS[family]})", f"Parity: {y}")
 
 
 def case_errors(test: pd.DataFrame) -> pd.DataFrame:
     """Cl error (absolute) and Cd error (percent) for each test case."""
     return test.assign(dCl=test.Cl_pred - test.Cl_true,
                        dCd_pct=100 * (test.Cd_pred - test.Cd_true) / test.Cd_true)
-
-
-def error_histogram_figure(err: pd.DataFrame, y: str) -> go.Figure:
-    col, x_title = ("dCl", "Cl error (pred − CFD)") if y == "Cl" else ("dCd_pct", "Cd error (%)")
-    a = err[col].abs()
-    span = 4 * a.quantile(0.9)          # show ±4× the 90th percentile; count the rest in the title
-    n_out = int((a > span).sum())
-    fig = go.Figure(go.Histogram(x=err[col], xbins=dict(start=-span, end=span, size=span / 30),
-                                 marker_color=SERIES, opacity=0.85, name="test cases",
-                                 hovertemplate=f"{x_title} %{{x}}<br>%{{y}} cases<extra></extra>"))
-    fmt = ".3f" if y == "Cl" else ".1f"
-    for v, dash, label in ((a.median(), "solid", "median"), (a.quantile(0.9), "dash", "90th pct")):
-        fig.add_vline(x=v, line_dash=dash, line_color=TRAINING, line_width=1.5)
-        fig.add_vline(x=-v, line_dash=dash, line_color=TRAINING, line_width=1.5)
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines", line=dict(color=TRAINING, dash=dash),
-                                 name=f"±{label} |error| = {format(v, fmt)}"))
-    fig.update_xaxes(range=[-span, span])
-    title = f"{y} error distribution" + (f" ({n_out} beyond the axis)" if n_out else "")
-    return style_plot(fig, x_title, "number of test cases", title)
 
 
 def family_summary(preds: pd.DataFrame) -> pd.DataFrame:
@@ -218,11 +196,11 @@ def family_summary(preds: pd.DataFrame) -> pd.DataFrame:
             continue
         e = case_errors(t)
         cov = [c for c in (coverage95(t, "Cl"), coverage95(t, "Cd")) if c is not None]
-        rows.append({"family": FAMILY_LABELS[fam], "Cl R²": r_squared(t.Cl_true, t.Cl_pred),
-                     "Cl median |error|": e.dCl.abs().median(), "Cd R²": r_squared(t.Cd_true, t.Cd_pred),
-                     "Cd median |error| (%)": e.dCd_pct.abs().median(),
-                     "Cd 90th pct |error| (%)": e.dCd_pct.abs().quantile(0.9),
-                     "inside 95% band": np.mean(cov) if cov else np.nan})
+        rows.append({"Model": FAMILY_LABELS[fam], "R² Cl": r_squared(t.Cl_true, t.Cl_pred),
+                     "Median |ΔCl|": e.dCl.abs().median(), "R² Cd": r_squared(t.Cd_true, t.Cd_pred),
+                     "Median |ΔCd|/Cd (%)": e.dCd_pct.abs().median(),
+                     "P90 |ΔCd|/Cd (%)": e.dCd_pct.abs().quantile(0.9),
+                     "95% PI coverage": np.mean(cov) if cov else np.nan})
     return pd.DataFrame(rows)
 
 
@@ -233,14 +211,14 @@ def r_squared(true: pd.Series, pred: pd.Series) -> float:
 def error_vs_alpha_figure(test: pd.DataFrame, y: str) -> go.Figure:
     err = test[f"{y}_pred"] - test[f"{y}_true"] if y == "Cl" else \
         100 * (test.Cd_pred - test.Cd_true) / test.Cd_true
-    y_title = "Cl error (pred − CFD)" if y == "Cl" else "Cd error (%)"
+    y_title = "ΔCl (predicted − CFD)" if y == "Cl" else "ΔCd / Cd (%)"
     fig = go.Figure(go.Scatter(
         x=test.alpha_deg, y=err, mode="markers", name="test case",
         marker=dict(size=7, color=test.Re / 1e6, colorscale="Viridis", showscale=True,
                     colorbar=dict(title="Re ×10⁶", thickness=12)),
         customdata=_case_hover(test), hovertemplate=CASE_HOVER + f"{y_title} %{{y:.4g}}<extra></extra>"))
     fig.add_hline(y=0, line_color="#94a3b8", line_width=1)
-    return style_plot(fig, "Angle of attack (deg)", y_title, f"{y} error across the envelope").update_layout(
+    return style_plot(fig, "Angle of attack (deg)", y_title, f"{'Cl residual' if y == 'Cl' else 'Cd relative error'} vs α").update_layout(
         showlegend=False)
 
 
@@ -258,46 +236,40 @@ envelope = load_envelope(TASK)["envelope"]
 quantities = curve_quantities(TASK)
 
 st.title("Model accuracy")
-st.caption("How far the surrogate can be trusted, measured on data it never saw: published NACA 0012 "
-           "experiments and CFD, and the 200 held-out AirfRANS test simulations.")
-st.caption(f"Training envelope: α {envelope['alpha_deg'][0]:.1f}° to {envelope['alpha_deg'][1]:.1f}°, "
-           f"Re {envelope['Re'][0] / 1e6:.2f}–{envelope['Re'][1] / 1e6:.2f}×10⁶, "
-           f"t/c {envelope['t_max'][0]:.3f}–{envelope['t_max'][1]:.3f}, "
-           f"camber ≤ {envelope['m_max'][1]:.3f}. Fully turbulent SST: no laminar-turbulent "
-           "transition; steady RANS is least reliable near stall.")
+st.caption(f"Predictive accuracy of the {FAMILY_LABELS[family]} surrogate on data excluded from training. "
+           f"Applicability domain: α {envelope['alpha_deg'][0]:.1f}° to {envelope['alpha_deg'][1]:.1f}°, "
+           f"Re {envelope['Re'][0] / 1e6:.1f}–{envelope['Re'][1] / 1e6:.1f}×10⁶, "
+           f"t/c {envelope['t_max'][0]:.2f}–{envelope['t_max'][1]:.2f}, camber ≤ {envelope['m_max'][1]:.3f}; "
+           "fully turbulent k-ω SST, no transition modelling.")
 
-tab_ref, tab_test = st.tabs(["NACA 0012 vs published references", "Test set: 200 held-out cases"])
+tab_ref, tab_test = st.tabs(["External validation: NACA 0012", "Hold-out evaluation: AirfRANS test set"])
 with tab_ref:
     refs = load_references()
     ref_pred = reference_sweep(family)
-    st.markdown(f"**{FAMILY_LABELS[family]} surrogate for NACA 0012 at Re = 6×10⁶**, against Ladson's wind-tunnel "
-                "data (NASA TM 4074, transition tripped), Gregory & O'Reilly (NASA R&M 3726, Re 2.9×10⁶) "
-                "and the NASA Turbulence Modeling Resource CFL3D k-ω SST solution — the same turbulence "
-                "model AirfRANS uses. None of these points were used in training.")
+    st.markdown("NACA 0012 at Re = 6×10⁶. **Experiment:** Ladson (NASA TM 4074, tripped transition) and "
+                "Gregory & O'Reilly (NASA R&M 3726, Re = 2.9×10⁶). **CFD:** NASA TMR CFL3D, k-ω SST — the "
+                "turbulence model of the training data.")
     agree = reference_agreement(ref_pred, refs)
     lad, tmr = agree[agree.reference.str.startswith("Ladson")], agree[agree.reference.str.startswith("NASA")]
     k = st.columns(4)
-    k[0].metric("Median |ΔCl| vs Ladson", f"{lad.dCl.abs().median():.3f}")
-    k[1].metric("Median ΔCd vs Ladson", f"{lad.dCd_pct.median():+.1f}%")
-    k[2].metric("Mean |ΔCl| vs TMR SST", f"{tmr.dCl.abs().mean():.3f}")
-    k[3].metric("Mean |ΔCd| vs TMR SST", f"{tmr.dCd_pct.abs().mean():.1f}%")
+    k[0].metric("Median |ΔCl|, experiment", f"{lad.dCl.abs().median():.3f}")
+    k[1].metric("Median ΔCd/Cd, experiment", f"{lad.dCd_pct.median():+.1f}%")
+    k[2].metric("Mean |ΔCl|, SST CFD", f"{tmr.dCl.abs().mean():.3f}")
+    k[3].metric("Mean |ΔCd|/Cd, SST CFD", f"{tmr.dCd_pct.abs().mean():.1f}%")
     r1, r2 = st.columns(2)
     r1.plotly_chart(reference_coeff_figure(ref_pred, refs, "Cl", family), width="stretch")
     r2.plotly_chart(reference_coeff_figure(ref_pred, refs, "Cd", family), width="stretch")
     if quantities and has_curve_models(family, TASK):
-        ref_alpha = st.radio("Reference α for the surface curves (deg)", REF_ALPHAS, index=1, horizontal=True,
+        ref_alpha = st.radio("Wall distributions at α (deg)", REF_ALPHAS, index=1, horizontal=True,
                              key="ref_alpha")
         ref_surf = reference_surface(family, float(ref_alpha))
         rcols = st.columns(len(quantities))
         for col, q in zip(rcols, quantities):
             col.plotly_chart(reference_surface_figure(ref_surf, refs, q, ref_alpha), width="stretch")
-    st.caption(f"Experimental points beyond α = {REF_ALPHA_MAX:g}° (post-stall, outside the training "
-               "envelope) are not plotted. Reading the gaps: against the TMR SST solution (same physics) the surrogate should agree "
-               "closely. Against experiment, fully turbulent SST over-predicts drag at these Reynolds "
-               "numbers and cannot capture laminar runs, so a drag excess of a few percent is the CFD's, "
-               "not the surrogate's. Past ~12° steady RANS and the experiments both lose reliability near stall. "
-               "See results/airfrans_report.md §3.")
-    with st.expander("Point-by-point comparison"):
+    st.caption("Deviation from the SST solution measures surrogate error; the remaining offset from experiment "
+               "(Cd over-predicted by fully turbulent SST) is inherited from the training CFD. "
+               f"Post-stall measurements (α > {REF_ALPHA_MAX:g}°) are omitted.")
+    with st.expander("Point-wise comparison"):
         st.dataframe(agree.round({"alpha_deg": 2, "Cl_ref": 4, "Cd_ref": 5, "Cl_pred": 4, "Cd_pred": 5,
                                   "dCl": 4, "dCd_pct": 2}), width="stretch", hide_index=True)
 
@@ -305,57 +277,43 @@ with tab_test:
     preds_all = load_test_predictions()
     preds_all = preds_all[preds_all.task == TASK] if not preds_all.empty else preds_all
     if preds_all.empty:
-        st.info("No per-case test predictions yet — run `uv run python scripts/10_global_validation.py`.")
+        st.info("No test-set predictions found. Run `uv run python scripts/10_global_validation.py`.")
     else:
         test = preds_all[preds_all.family == family]
         err = case_errors(test)
-        st.markdown(f"The surrogates were trained on 800 AirfRANS simulations; the other **{len(test)}** "
-                    "(the official 800/200 split) were held back and never used for fitting or tuning. "
-                    f"Below, the **{FAMILY_LABELS[family]}** surrogate is scored against the CFD result of every "
-                    "one of them, at that case's own section, Re and α. Change the family in the sidebar.")
+        st.markdown(f"{len(test)} AirfRANS cases withheld from training and hyper-parameter selection "
+                    "(official 800/200 split). Errors are relative to the AirfRANS k-ω SST solutions.")
         k = st.columns(5)
-        k[0].metric("Cl R²", f"{r_squared(test.Cl_true, test.Cl_pred):.4f}")
-        k[1].metric("Cl median |error|", f"{err.dCl.abs().median():.4f}")
-        k[2].metric("Cd R²", f"{r_squared(test.Cd_true, test.Cd_pred):.4f}")
-        k[3].metric("Cd median |error|", f"{err.dCd_pct.abs().median():.2f}%")
+        k[0].metric("R² Cl", f"{r_squared(test.Cl_true, test.Cl_pred):.4f}")
+        k[1].metric("Median |ΔCl|", f"{err.dCl.abs().median():.4f}")
+        k[2].metric("R² Cd", f"{r_squared(test.Cd_true, test.Cd_pred):.4f}")
+        k[3].metric("Median |ΔCd|/Cd", f"{err.dCd_pct.abs().median():.2f}%")
         cov = [c for c in (coverage95(test, "Cl"), coverage95(test, "Cd")) if c is not None]
-        k[4].metric("Inside 95% band", "—" if not cov else f"{100 * np.mean(cov):.0f}%",
-                    help="Share of test cases whose CFD value lies inside the predicted 95% band "
-                         "(Cl and Cd averaged). A calibrated model scores about 95%. GP and KRG only.")
+        k[4].metric("95% PI coverage", "—" if not cov else f"{100 * np.mean(cov):.0f}%",
+                    help="Fraction of test cases inside the 95% prediction interval (mean of Cl and Cd); "
+                         "nominal value 95%. GP and KRG only.")
         p1, p2 = st.columns(2)
         p1.plotly_chart(parity_figure(test, "Cl", family), width="stretch")
         p2.plotly_chart(parity_figure(test, "Cd", family), width="stretch")
-        h1, h2 = st.columns(2)
-        h1.plotly_chart(error_histogram_figure(err, "Cl"), width="stretch")
-        h2.plotly_chart(error_histogram_figure(err, "Cd"), width="stretch")
         e1, e2 = st.columns(2)
         e1.plotly_chart(error_vs_alpha_figure(test, "Cl"), width="stretch")
         e2.plotly_chart(error_vs_alpha_figure(test, "Cd"), width="stretch")
 
-        st.markdown("**All four families on the same 200 test cases**")
+        st.subheader("Comparison of surrogate families")
         summary = family_summary(preds_all)
-        st.dataframe(summary.style.format({c: "{:.4f}" for c in summary.columns if c != "family"} |
-                                          {"Cd median |error| (%)": "{:.2f}", "Cd 90th pct |error| (%)": "{:.2f}",
-                                           "inside 95% band": lambda v: "—" if pd.isna(v) else f"{100 * v:.0f}%"})
-                     .apply(lambda r: ["font-weight: bold" if r.family == FAMILY_LABELS[family] else ""] * len(r),
+        st.dataframe(summary.style.format({c: "{:.4f}" for c in summary.columns if c != "Model"} |
+                                          {"Median |ΔCd|/Cd (%)": "{:.2f}", "P90 |ΔCd|/Cd (%)": "{:.2f}",
+                                           "95% PI coverage": lambda v: "—" if pd.isna(v) else f"{100 * v:.0f}%"})
+                     .apply(lambda r: ["font-weight: bold" if r.Model == FAMILY_LABELS[family] else ""] * len(r),
                             axis=1), width="stretch", hide_index=True)
 
         cm = load_curve_metrics()
         cm = cm[cm.task == TASK] if not cm.empty else cm
         if not cm.empty:
-            st.markdown("**Wall curves on the same test cases** (Cp and Cf on 202 wall stations)")
-            st.dataframe(cm.assign(family=cm.family.map(FAMILY_LABELS))[
-                ["family", "quantity", "RMSE", "R2_station_mean", "coverage_2sigma", "suction_peak_MAE",
-                 "separation_detect_accuracy", "separation_xc_MAE"]].rename(columns={
-                    "R2_station_mean": "R² (station mean)", "coverage_2sigma": "±2σ coverage",
-                    "suction_peak_MAE": "suction-peak MAE", "separation_detect_accuracy": "separation detected",
-                    "separation_xc_MAE": "separation x/c MAE"}).round(4), width="stretch", hide_index=True)
-
-        with st.expander(f"The 10 largest Cd misses ({FAMILY_LABELS[family]})"):
-            worst = err.assign(Re_e6=err.Re / 1e6).reindex(err.dCd_pct.abs().sort_values(ascending=False).index)
-            st.dataframe(worst.head(10)[["sample_id", "alpha_deg", "Re_e6", "t_max", "m_max", "Cl_true", "Cl_pred",
-                                         "dCl", "Cd_true", "Cd_pred", "dCd_pct"]].round(5),
-                         width="stretch", hide_index=True)
-        st.caption("Each test case has one CFD answer, so these errors measure the surrogate against "
-                   "AirfRANS' own k-ω SST simulations, not against experiment. Full tables: "
-                   "results/airfrans_benchmark.md (our models).")
+            with st.expander("Wall distributions (Cp, Cf): test-set metrics"):
+                st.dataframe(cm.assign(family=cm.family.map(FAMILY_LABELS))[
+                    ["family", "quantity", "RMSE", "R2_station_mean", "coverage_2sigma",
+                     "separation_detect_accuracy"]].rename(columns={
+                        "family": "Model", "quantity": "Quantity", "R2_station_mean": "R²",
+                        "coverage_2sigma": "±2σ coverage", "separation_detect_accuracy": "Separation detected"})
+                    .round(4), width="stretch", hide_index=True)

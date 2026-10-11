@@ -24,8 +24,8 @@ def test_app_runs_default():
     at = _run()
     assert not at.exception, at.exception
     assert any("ODbL" in c.value for c in at.caption)
-    assert [m.label for m in at.metric] == ["Best L/D", "AoA at best L/D", "Max Cl in sweep",
-                                            "Min Cd in sweep", "Zero-lift α"]
+    assert [m.label for m in at.metric] == ["(L/D) max", "α at (L/D) max", "Cl max (sweep)",
+                                            "Cd min (sweep)", "Zero-lift α₀"]
 
 
 def test_app_accuracy_page_all_families():
@@ -34,8 +34,8 @@ def test_app_accuracy_page_all_families():
     assert not at.exception, at.exception
     assert any(t.value == "Model accuracy" for t in at.title)
     labels = [m.label for m in at.metric]
-    assert "Median |ΔCl| vs Ladson" in labels
-    assert "Cd median |error|" in labels
+    assert "Median |ΔCl|, experiment" in labels
+    assert "Median |ΔCd|/Cd" in labels
     for family in ("rf", "mlp", "krg"):
         at.sidebar.selectbox[0].set_value(family).run()
         assert not at.exception, (family, at.exception)

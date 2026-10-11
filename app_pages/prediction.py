@@ -59,16 +59,15 @@ code, geo, re, family = query.code, query.geo, query.re, query.family
 train = load_training()
 
 st.title("CamberLab")
-st.caption("Lift, drag and surface pressure / skin friction of NACA 4- and 5-digit aerofoils, "
-           "predicted in milliseconds by surrogates "
-           "trained on 800 AirfRANS steady RANS (k-ω SST) simulations.")
+st.caption("Surrogate prediction of Cl, Cd and wall Cp, Cf for NACA 4- and 5-digit sections, trained on "
+           "800 steady RANS (k-ω SST) solutions from AirfRANS.")
 
 alphas = np.linspace(query.alpha_min, query.alpha_max, query.n_points)
 df = add_95_band(predict_curve(alphas, re, code, family, TASK))
 warnings = df.attrs["warnings"]
 outside = [w for w in warnings if "outside" in w]
 if outside:
-    st.warning("**Outside the training envelope — these predictions are extrapolations.**\n\n"
+    st.warning("**Query outside the training domain: extrapolated predictions.**\n\n"
                + "\n".join(f"- {w}" for w in outside))
 for w in warnings:
     if w not in outside:
@@ -76,12 +75,12 @@ for w in warnings:
 
 best = df.loc[df.L_over_D.idxmax()]
 kpi = st.columns(5)
-kpi[0].metric("Best L/D", f"{best.L_over_D:.1f}")
-kpi[1].metric("AoA at best L/D", f"{best.alpha_deg:.1f}°")
-kpi[2].metric("Max Cl in sweep", f"{df.Cl.max():.3f}")
-kpi[3].metric("Min Cd in sweep", f"{df.Cd.min():.5f}")
+kpi[0].metric("(L/D) max", f"{best.L_over_D:.1f}")
+kpi[1].metric("α at (L/D) max", f"{best.alpha_deg:.1f}°")
+kpi[2].metric("Cl max (sweep)", f"{df.Cl.max():.3f}")
+kpi[3].metric("Cd min (sweep)", f"{df.Cd.min():.5f}")
 zero = np.interp(0.0, df.Cl, df.alpha_deg) if df.Cl.min() < 0 < df.Cl.max() else np.nan
-kpi[4].metric("Zero-lift α", "—" if np.isnan(zero) else f"{zero:.2f}°")
+kpi[4].metric("Zero-lift α₀", "—" if np.isnan(zero) else f"{zero:.2f}°")
 
 near = nearby_cfd(train, re, geo)
 c1, c2 = st.columns(2)
@@ -90,26 +89,25 @@ c2.plotly_chart(curve_figure(df, "Cd", "Drag curve", "Cd", family, near), width=
 c3, c4 = st.columns(2)
 c3.plotly_chart(curve_figure(df, "L_over_D", "Efficiency curve", "L/D", family), width="stretch")
 c4.plotly_chart(polar_figure(df, family), width="stretch")
-st.caption(f"Nearby CFD rows: {len(near)} AirfRANS training cases within ±{100 * NEAR_RE_FRAC:.0f}% Re, "
-           f"±{NEAR_DT:g} t/c and ±{NEAR_DM:g} camber of the query, at any α. They are similar, "
-           "not identical, sections — context, not ground truth for this query.")
+plural = "" if len(near) == 1 else "s"
+notes = [f"Nearby CFD: {len(near)} training solution{plural} within ±{100 * NEAR_RE_FRAC:.0f}% Re, "
+         f"±{NEAR_DT:g} t/c and ±{NEAR_DM:g} camber (any α); neighbouring sections, shown for context only."]
+notes.append("Shaded bands: 95% prediction interval." if family in ("gp", "krg")
+             else f"No prediction interval: {FAMILY_LABELS[family]} provides no calibrated predictive variance.")
+st.caption(" ".join(notes))
 quantities = curve_quantities(TASK)
 if quantities and not has_curve_models(family, TASK):
-    st.caption(f"Surface Cp / Cf curves are not bundled for {FAMILY_LABELS[family]} (only GP and MLP "
-               "curve models are committed); train them with `scripts/09_train_surrogates.py "
-               "--outputs curves`.")
+    st.caption(f"Wall-distribution models for {FAMILY_LABELS[family]} are not bundled; train them with "
+               "`scripts/09_train_surrogates.py --outputs curves`.")
 elif quantities:
     surf = predict_surface(query.surface_alpha, re, code, family, TASK)
     cols = st.columns(len(quantities))
     for col, q in zip(cols, quantities):
         col.plotly_chart(surface_figure(surf, q, query.surface_alpha), width="stretch")
     if "Cf" not in quantities:
-        st.caption("Skin friction is not shown: the computed wall shear stress did not reproduce "
-                   "AirfRANS' drag closely enough (results/airfrans_surface_gate.md).")
-if family not in ("gp", "krg"):
-    st.caption("95% uncertainty bands are shown for the GP and KRG families only.")
+        st.caption("Cf omitted: the reconstructed wall shear stress failed the drag-consistency gate.")
 
-st.subheader("Prediction table")
+st.subheader("Tabulated predictions")
 cols = [c for c in ["alpha_deg", "Cl", "Cl_std", "Cd", "Cd_std", "L_over_D", "L_over_D_std"] if c in df]
 table = df[cols].astype(float).round(6)
 st.dataframe(table, width="stretch", hide_index=True)

@@ -172,8 +172,8 @@ def surface_figure(surf: pd.DataFrame, q: str, alpha: float) -> go.Figure:
                                  hovertemplate=f"x/c %{{x:.3f}}<br>{q} %{{y:.4g}}<extra>{side}</extra>"))
     if q == "Cp":
         fig.update_yaxes(autorange="reversed")
-        title, y_title = f"Pressure coefficient at α = {alpha:g}°", "Cp"
+        title, y_title = f"Pressure distribution, α = {alpha:g}°", "Cp"
     else:
         fig.add_hline(y=0, line_color="#8a8985", line_width=1)
-        title, y_title = f"Skin friction at α = {alpha:g}° (Cf < 0: reversed flow)", "Cf × 10³"
+        title, y_title = f"Skin friction, α = {alpha:g}° (Cf < 0: reversed flow)", "Cf × 10³"
     return style_plot(fig, "x/c", y_title, title)
