@@ -21,6 +21,9 @@ from scripts.surrogate.models import FAMILIES, FAMILY_LABELS
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RESULTS_DIR = PROJECT_ROOT / "results"
 TASK = "full"
+REF_NACA = "0012"              # external-validation case shown on the Model accuracy page
+REF_RE = 6.0e6                 # NASA TMR and Ladson reference condition
+DEFAULTS = {"naca": "0012", "re": 2.0e6}   # CamberLab inputs replaced by fixed values on the accuracy page
 Z95 = 1.96                     # two-sided 95% normal quantile; the inference API returns ±2σ
 
 SERIES = "#1f77b4"
@@ -43,23 +46,35 @@ class Query:
     surface_alpha: float
 
 
-def sidebar_query(sweep_inputs: bool = True) -> Query | None:
+def sidebar_query(accuracy_page: bool = False) -> Query | None:
     """Draw the input sidebar; None if the NACA code is invalid (the error is shown in the sidebar).
 
-    With sweep_inputs=False the α-sweep and surface-α sliders stay visible but
-    disabled, so their values survive a switch to a page that does not use them.
+    On the accuracy page only the model family is editable: the section and Re
+    show the fixed validation case (NACA 0012, Re 6×10⁶) and the sweep sliders
+    are greyed out. The CamberLab NACA and Re values are kept in session state
+    so they reappear unchanged when the user switches back.
     """
-    off = not sweep_inputs
+    for k, v in DEFAULTS.items():
+        # Streamlit drops the state of widgets that are not drawn; re-assigning keeps it across pages.
+        st.session_state[k] = st.session_state.get(k, v)
+    fixed = accuracy_page
+    fixed_help = "Fixed on this page: external validation uses NACA 0012 at Re = 6×10⁶."
     with st.sidebar:
         st.header("Inputs")
-        naca = st.text_input("NACA code (4 or 5 digits)", value="0012", max_chars=9).strip()
-        re = st.slider("Reynolds number", min_value=2.0e6, max_value=6.0e6, value=2.0e6, step=1.0e5,
-                       format="%.1e")
+        if fixed:
+            naca = st.text_input("NACA code (4 or 5 digits)", value=REF_NACA, disabled=True, key="naca_fixed",
+                                 help=fixed_help)
+            re = st.slider("Reynolds number", 2.0e6, 6.0e6, REF_RE, format="%.1e", disabled=True,
+                           key="re_fixed", help=fixed_help)
+        else:
+            naca = st.text_input("NACA code (4 or 5 digits)", max_chars=9, key="naca").strip()
+            re = st.slider("Reynolds number", min_value=2.0e6, max_value=6.0e6, step=1.0e5, format="%.1e",
+                           key="re")
         alpha_min, alpha_max = st.slider("AoA sweep (deg)", -5.0, 15.0, (0.0, 8.0), step=0.5,
-                                         disabled=off)
-        n_points = st.slider("Sweep points", 21, 161, 61, step=10, disabled=off)
+                                         disabled=fixed)
+        n_points = st.slider("Sweep points", 21, 161, 61, step=10, disabled=fixed)
         surface_alpha = st.slider("AoA for surface curves (deg)", -5.0, 15.0, 4.0, step=0.5,
-                                  disabled=off)
+                                  disabled=fixed)
         family = st.selectbox("Model family", FAMILIES, index=FAMILIES.index("gp"),
                               format_func=lambda f: {"gp": "GP — Gaussian process", "rf": "RF — random forest",
                                                      "mlp": "MLP — neural network",

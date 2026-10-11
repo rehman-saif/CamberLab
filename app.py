@@ -25,7 +25,7 @@ st.set_page_config(page_title="CamberLab", layout="wide")
 page = st.navigation([st.Page("app_pages/prediction.py", title="CamberLab", default=True),
                       st.Page("app_pages/accuracy.py", title="Model accuracy")], position="top")
 
-query = sidebar_query(sweep_inputs=page.title == "CamberLab")
+query = sidebar_query(accuracy_page=page.title == "Model accuracy")
 if query is None:
     st.info("Enter a valid NACA 4-digit (e.g. 0012, 2412) or 5-digit (e.g. 23012, 23112) code.")
     st.stop()

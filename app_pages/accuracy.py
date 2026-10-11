@@ -11,6 +11,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from app_pages.common import (
+    REF_NACA,
+    REF_RE,
     RESULTS_DIR,
     TASK,
     Z95,
@@ -31,7 +33,6 @@ from scripts.surrogate.models import FAMILIES, FAMILY_LABELS
 
 CURVE_METRICS_PATH = RESULTS_DIR / "airfrans_curve_metrics.csv"
 TEST_PRED_PATH = RESULTS_DIR / "airfrans_test_predictions.csv"
-REF_RE = 6.0e6                 # NASA TMR and Ladson reference condition
 REF_ALPHAS = (0, 10, 15)       # α with TMR / Ladson / Gregory surface data
 REF_ALPHA_MAX = 16.0           # Ladson / Gregory run to 19° (post-stall); plot only up to the envelope edge
 REF_TMR = "#dc2626"
@@ -65,12 +66,12 @@ def load_curve_metrics() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def reference_sweep(family: str) -> pd.DataFrame:
-    return add_95_band(predict_curve(np.linspace(-5.0, 15.0, 81), REF_RE, "0012", family, TASK))
+    return add_95_band(predict_curve(np.linspace(-5.0, 15.0, 81), REF_RE, REF_NACA, family, TASK))
 
 
 @st.cache_data(show_spinner=False)
 def reference_surface(family: str, alpha: float) -> pd.DataFrame:
-    return predict_surface(alpha, REF_RE, "0012", family, TASK)
+    return predict_surface(alpha, REF_RE, REF_NACA, family, TASK)
 
 
 def ladson_points(refs: dict) -> pd.DataFrame:
