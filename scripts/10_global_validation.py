@@ -9,6 +9,7 @@ Purpose: Score every task × family on its frozen test split, draw parity and
 Outputs:
     results/airfrans_metrics.csv            one row per task × family × target
     results/airfrans_curve_metrics.csv      one row per task × family × curve quantity
+    results/airfrans_test_predictions.csv   one row per task × family × test case (app accuracy view)
     results/airfrans_benchmark.md           our models vs the paper's four models
     results/figures/eval/parity_{task}_{Cl,Cd}.png
     results/figures/eval/residuals_{task}.png
@@ -59,6 +60,7 @@ FIG_DIR = RESULTS_DIR / "figures" / "eval"
 CURVE_FIG_DIR = RESULTS_DIR / "figures" / "curves"
 METRICS_PATH = RESULTS_DIR / "airfrans_metrics.csv"
 CURVE_METRICS_PATH = RESULTS_DIR / "airfrans_curve_metrics.csv"
+TEST_PRED_PATH = RESULTS_DIR / "airfrans_test_predictions.csv"
 BENCH_PATH = RESULTS_DIR / "airfrans_benchmark.md"
 PAPER_DIR = RESULTS_DIR / "reference" / "airfrans_paper" / "scores"
 PAPER_MODELS = ["MLP", "GraphSAGE", "PointNet", "Graph U-Net"]
@@ -76,7 +78,10 @@ def evaluate_task(task: str, df: pd.DataFrame) -> tuple[list[dict], dict]:
     X = joblib.load(d / "preprocessor.joblib").transform(get_xy(test)[0])
     truth = {"Cl": test.Cl.to_numpy(), "Cd": test.Cd.to_numpy()}
     rows, preds = [], {}
+    case_cols = ["sample_id", "alpha_deg", "Re", "t_max", "x_tmax", "m_max", "x_m"]
+    cases = []
     for family in FAMILIES:
+        case = test[case_cols].assign(task=task, family=family, Cl_true=truth["Cl"], Cd_true=truth["Cd"])
         for target in TARGETS:
             model = joblib.load(d / f"{family}_{target}.joblib")
             mean, std = predict(model, family, X, return_std=True)
@@ -95,7 +100,12 @@ def evaluate_task(task: str, df: pd.DataFrame) -> tuple[list[dict], dict]:
                 row["gp_coverage_2sigma"] = float(np.mean(np.abs(y_model - mean) <= 2 * std))
             rows.append(row)
             preds[(family, target)] = y_pred
-    return rows, {"test": test, "preds": preds}
+            # σ in model space (Cl, log Cd), only for the calibrated posteriors (GP, KRG)
+            sigma = std if family in ("gp", "krg") else np.full(len(y), np.nan)
+            case[f"{target}_pred"] = y_pred
+            case["Cl_std" if target == "Cl" else "logCd_std"] = sigma
+        cases.append(case)
+    return rows, {"test": test, "preds": preds, "cases": pd.concat(cases, ignore_index=True)}
 
 
 def plot_parity(task: str, target: str, test: pd.DataFrame, preds: dict, metrics: pd.DataFrame) -> Path:
@@ -385,10 +395,11 @@ def benchmark_md(metrics: pd.DataFrame) -> str:
 
 def main() -> int:
     df = load_dataset()
-    all_rows = []
+    all_rows, all_cases = [], []
     for task in TASKS:
         rows, out = evaluate_task(task, df)
         all_rows += rows
+        all_cases.append(out["cases"])
         m = pd.DataFrame(rows)
         for target in TARGETS:
             plot_parity(task, target, out["test"], out["preds"], m)
@@ -398,6 +409,11 @@ def main() -> int:
                      r["target"], r["R2"], r["spearman"], r["rel_err_mean"], r["rel_err_median"])
     metrics = pd.DataFrame(all_rows)
     metrics.to_csv(METRICS_PATH, index=False, float_format="%.6g")
+    cases = pd.concat(all_cases, ignore_index=True)
+    lead = ["task", "family", "sample_id"]
+    cases[lead + [c for c in cases.columns if c not in lead]].to_csv(TEST_PRED_PATH, index=False,
+                                                                       float_format="%.8g")
+    log.info("Wrote %s (%d rows)", TEST_PRED_PATH.relative_to(PROJECT_ROOT), len(cases))
     bench = benchmark_md(metrics)
 
     curve_tasks = [t for t in TASKS if curve_quantities(t)]
